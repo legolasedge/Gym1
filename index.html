@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Зал">
+<meta name="theme-color" content="#0e0e10">
+<title>Зал</title>
+<style>
+:root{
+  --bg:#0e0e10; --card:#1c1c1f; --card2:#26262b; --txt:#f2f2f4; --dim:#8b8b93;
+  --acc:#2f7cf6; --ok:#22c55e; --err:#ef4444; --r:14px;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--txt);
+  font:16px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
+  touch-action:manipulation}
+body{padding:calc(env(safe-area-inset-top) + 10px) 14px calc(env(safe-area-inset-bottom) + 30px)}
+h1{font-size:22px;margin:6px 0 14px}
+h2{font-size:16px;margin:20px 0 8px;color:var(--dim);font-weight:600}
+button,label.btn{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+.card{background:var(--card);border-radius:var(--r);padding:14px;margin-bottom:10px}
+.row{display:flex;align-items:center;gap:10px}
+.spacer{flex:1}
+.dim{color:var(--dim);font-size:14px}
+.btn{display:flex;align-items:center;justify-content:center;gap:6px;
+  background:var(--card2);border-radius:10px;padding:11px 14px;font-size:15px;font-weight:500}
+.btn.acc{background:var(--acc);color:#fff}
+.btn.wide{width:100%;padding:14px;font-size:16px}
+.btn.danger{color:var(--err)}
+.back{font-size:15px;color:var(--acc);padding:6px 0;display:inline-block;cursor:pointer}
+input[type=text],input[type=number]{
+  background:var(--card2);border:0;border-radius:9px;color:var(--txt);
+  padding:11px 12px;font:inherit;width:100%;outline:none}
+input[type=number]{text-align:center}
+input::-webkit-outer-spin-button,input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+input[type=checkbox]{-webkit-appearance:none;appearance:none;width:28px;height:28px;
+  border-radius:8px;background:var(--card2);border:2px solid #3a3a42;margin:0;
+  display:grid;place-items:center;flex:none}
+input[type=checkbox]:checked{background:var(--ok);border-color:var(--ok)}
+input[type=checkbox]:checked::after{content:"✓";color:#fff;font-size:15px;font-weight:700}
+.thumb{width:54px;height:54px;border-radius:10px;object-fit:cover;background:var(--card2);
+  flex:none;display:grid;place-items:center;font-size:22px}
+.sets-line{font-size:14px;color:var(--dim);margin-top:2px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.setrow{display:grid;grid-template-columns:1fr 1fr 46px;gap:8px;align-items:center;margin-bottom:8px}
+.wset{display:grid;grid-template-columns:34px 1fr 1fr;gap:8px;align-items:center;margin-bottom:8px}
+.daynum{width:44px;height:44px;border-radius:12px;background:var(--card2);
+  display:grid;place-items:center;font-weight:600;flex:none;font-size:14px}
+.daynum.today{background:var(--acc)}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+const app = document.getElementById('app');
+const DAYS = ['Понедельник','Вторник','Среда','Четверг','Пятница','Суббота','Воскресенье'];
+const uid = () => Math.random().toString(36).slice(2,10);
+const esc = s => String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const num = v => { const n = parseFloat(String(v).replace(',','.')); return isNaN(n)?0:n; };
+const norm = s => String(s).trim().toLowerCase();
+const fmtDate = d => new Date(d).toLocaleDateString('ru-RU',{day:'2-digit',month:'2-digit',year:'2-digit'});
+const todayIdx = () => (new Date().getDay()+6)%7;
+
+/* ---------- хранилище ---------- */
+let _db;
+function db(){ return _db || (_db = new Promise((res,rej)=>{
+  const r = indexedDB.open('gymapp',1);
+  r.onupgradeneeded = () => r.result.createObjectStore('kv');
+  r.onsuccess = () => res(r.result);
+  r.onerror = () => rej(r.error);
+}));}
+async function kvGet(k){ const d=await db(); return new Promise((res,rej)=>{
+  const t=d.transaction('kv').objectStore('kv').get(k);
+  t.onsuccess=()=>res(t.result); t.onerror=()=>rej(t.error); });}
+async function kvSet(k,v){ const d=await db(); return new Promise((res,rej)=>{
+  const t=d.transaction('kv','readwrite').objectStore('kv').put(v,k);
+  t.onsuccess=()=>res(); t.onerror=()=>rej(t.error); });}
+
+let state = {days:[], sessions:[]};
+let route = {name:'days'};
+let work = null;
+
+const save = () => kvSet('state', state);
+let saveTimer;
+function saveSoon(){ clearTimeout(saveTimer); saveTimer = setTimeout(save, 400); }
+
+/* ---------- helpers ---------- */
+const dayById = id => state.days.find(d=>d.id===id);
+const exById = (d,id) => d.exercises.find(x=>x.id===id);
+const setsSummary = sets => sets.map(s=>`${s.weight}×${s.reps}`).join(' · ');
+
+/* ---------- навигация ---------- */
+function go(name,a,b){
+  if(name==='days') route={name:'days'};
+  else if(name==='day') route={name:'day', dayId:a};
+  else if(name==='exEdit') route={name:'exEdit', dayId:a, exId:b};
+  else if(name==='workout') route={name:'workout'};
+  else if(name==='progress') route={name:'progress', dayId:a, exId:b};
+  render();
+}
+
+function render(){
+  window.scrollTo(0,0);
+  const views = {days:viewDays, day:viewDay, exEdit:viewExEdit, workout:viewWorkout, progress:viewProgress};
+  app.innerHTML = (views[route.name] && views[route.name]()) || '';
+  if(route.name==='workout') updateProgressBar();
+}
+
+/* ---------- экраны ---------- */
+function viewDays(){
+  const t = todayIdx();
+  return `<h1>Тренировки</h1>` +
+    state.days.map((d,i)=>`
+      <div class="card row" onclick="go('day','${d.id}')">
+        <div class="daynum ${i===t?'today':''}">${DAYS[i].slice(0,2)}</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600">${esc(d.name)}</div>
+          <div class="sets-line">${d.exercises.length
+            ? d.exercises.length+' упр. · '+d.exercises.map(e=>esc(e.name)).join(', ')
+            : 'пусто'}</div>
+        </div>
+        <div class="dim">›</div>
+      </div>`).join('') +
+    `<div style="margin-top:24px;display:flex;gap:8px">
+       <button class="btn" style="flex:1" onclick="exportData()">⬇︎ Бэкап</button>
+       <label class="btn" style="flex:1">⬆︎ Восстановить
+         <input type="file" accept="application/json" hidden onchange="importData(this)">
+       </label>
+     </div>`;
+}
+
+function viewDay(){
+  const d = dayById(route.dayId);
+  if(!d) return '<p>День не найден</p>';
+  return `
+  <span class="back" onclick="go('days')">‹ Все дни</span>
+  <h1>${esc(d.name)}</h1>
+  ${d.exercises.length===0 ? `<div class="card dim">Упражнений пока нет. Добавь первое 👇</div>` : ''}
+  ${d.exercises.map(e=>`
+    <div class="card row" onclick="go('exEdit','${d.id}','${e.id}')">
+      ${e.photo ? `<img class="thumb" src="${e.photo}">` : `<div class="thumb">🏋️</div>`}
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600">${esc(e.name)}</div>
+        <div class="sets-line">${e.sets.length} подх. · ${setsSummary(e.sets)}</div>
+      </div>
+      <div class="dim">›</div>
+    </div>`).join('')}
+  <button class="btn wide" onclick="addExercise('${d.id}')">+ Упражнение</button>
+  ${d.exercises.length ? `<button class="btn acc wide" style="margin-top:10px"
+      onclick="startWorkout('${d.id}')">Начать тренировку</button>` : ''}
+  `;
+}
+
+function viewExEdit(){
+  const d = dayById(route.dayId); if(!d) return '';
+  const e = exById(d, route.exId); if(!e) return '';
+  return `
+  <span class="back" onclick="go('day','${d.id}')">‹ ${esc(d.name)}</span>
+  <h1>Упражнение</h1>
+  <div class="card">
+    <div class="dim" style="margin-bottom:8px">Название</div>
+    <input type="text" value="${esc(e.name)}" oninput="renameEx('${d.id}','${e.id}',this.value)">
+  </div>
+  <div class="card">
+    <div class="dim" style="margin-bottom:12px">Фото</div>
+    <div class="row" style="align-items:flex-start;gap:12px">
+      ${e.photo ? `<img class="thumb" style="width:96px;height:96px" src="${e.photo}">`
+                : `<div class="thumb" style="width:96px;height:96px">🏋️</div>`}
+      <div style="flex:1;display:flex;flex-direction:column;gap:8px">
+        <label class="btn">📷 Камера
+          <input type="file" accept="image/*" capture="environment" hidden
+                 onchange="pickPhoto(this,'${d.id}','${e.id}')"></label>
+        <label class="btn">🖼 Галерея
+          <input type="file" accept="image/*" hidden
+                 onchange="pickPhoto(this,'${d.id}','${e.id}')"></label>
+        ${e.photo ? `<button class="btn danger" onclick="delPhoto('${d.id}','${e.id}')">Удалить фото</button>` : ''}
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="dim" style="margin-bottom:10px">Подходы: вес × повторения</div>
+    ${e.sets.map((s,i)=>`
+      <div class="setrow">
+        <input type="number" inputmode="decimal" placeholder="кг" value="${s.weight}"
+               oninput="setField('${d.id}','${e.id}',${i},'weight',this.value)">
+        <input type="number" inputmode="numeric" placeholder="повт" value="${s.reps}"
+               oninput="setField('${d.id}','${e.id}',${i},'reps',this.value)">
+        <button class="btn" onclick="delSet('${d.id}','${e.id}',${i})">✕</button>
+      </div>`).join('')}
+    <button class="btn wide" onclick="addSet('${d.id}','${e.id}')">+ Подход</button>
+  </div>
+  <button class="btn wide" onclick="go('progress','${d.id}','${e.id}')">📈 Прогресс</button>
+  <button class="btn wide danger" style="margin-top:10px"
+          onclick="delExercise('${d.id}','${e.id}')">Удалить упражнение</button>
+  `;
+}
+
+function viewWorkout(){
+  if(!work) return '';
+  const d = dayById(work.dayId);
+  return `
+  <span class="back" onclick="cancelWorkout()">‹ Отмена</span>
+  <h1>${esc(d.name)}</h1>
+  <div class="dim" style="margin:-8px 0 14px">${new Date(work.date)
+    .toLocaleDateString('ru-RU',{weekday:'long',day:'numeric',month:'long'})}</div>
+  <div style="height:6px;background:var(--card2);border-radius:3px;overflow:hidden;margin-bottom:16px">
+    <div id="wbar" style="height:100%;width:0%;background:var(--ok);transition:width .2s"></div>
+  </div>
+  ${work.exercises.map((e,ei)=>`
+    <div class="card">
+      <div class="row" style="margin-bottom:12px">
+        ${e.photo ? `<img class="thumb" src="${e.photo}">` : `<div class="thumb">🏋️</div>`}
+        <div style="font-weight:600">${esc(e.name)}</div>
+      </div>
+      ${e.sets.map((s,si)=>`
+        <div class="wset">
+          <input type="checkbox" ${s.done?'checked':''} onchange="toggleDone(${ei},${si},this)">
+          <input type="number" inputmode="decimal" placeholder="кг" value="${s.weight}"
+                 oninput="wset(${ei},${si},'weight',this.value)">
+          <input type="number" inputmode="numeric" placeholder="повт" value="${s.reps}"
+                 oninput="wset(${ei},${si},'reps',this.value)">
+        </div>`).join('')}
+    </div>`).join('')}
+  <label class="row" style="margin:6px 0 16px;gap:10px">
+    <input type="checkbox" ${work.updatePlan?'checked':''} onchange="work.updatePlan=this.checked">
+    <span class="dim">Обновить план этими весами</span>
+  </label>
+  <button class="btn acc wide" onclick="saveWorkout()">Сохранить тренировку</button>
+  `;
+}
+
+function viewProgress(){
+  const d = dayById(route.dayId); if(!d) return '';
+  const e = exById(d, route.exId); if(!e) return '';
+  const key = norm(e.name);
+  const hist = state.sessions
+    .map(s=>{
+      const items = s.exercises.filter(x=>norm(x.name)===key);
+      if(!items.length) return null;
+      return {date:s.date, dayName:s.dayName, sets:items.flatMap(x=>x.sets)};
+    })
+    .filter(Boolean)
+    .sort((a,b)=> new Date(a.date)-new Date(b.date));
+
+  const back = `<span class="back" onclick="go('exEdit','${d.id}','${e.id}')">‹ Назад</span>`;
+  if(!hist.length) return `${back}<h1>${esc(e.name)}</h1>
+    <div class="card dim">Пока нет записанных тренировок по этому упражнению.</div>`;
+
+  const maxW = hist.map(h=>Math.max(...h.sets.map(s=>s.weight)));
+  const vol  = hist.map(h=>h.sets.reduce((a,s)=>a+s.weight*s.reps,0));
+
+  return `${back}
+  <h1>${esc(e.name)}</h1>
+  <div class="card">
+    <div class="dim" style="margin-bottom:8px">Максимальный вес, кг</div>
+    ${chart(maxW)}
+  </div>
+  <div class="card">
+    <div class="dim" style="margin-bottom:8px">Тоннаж за тренировку (кг × повт.)</div>
+    ${chart(vol)}
+  </div>
+  <h2>История</h2>
+  ${hist.slice().reverse().map(h=>`
+    <div class="card">
+      <div class="row">
+        <div style="font-weight:600">${fmtDate(h.date)}</div>
+        <div class="spacer"></div>
+        <div class="dim">${esc(h.dayName)}</div>
+      </div>
+      <div class="sets-line" style="margin-top:6px">${h.sets.map(s=>`${s.weight}×${s.reps}`).join(' · ')}</div>
+    </div>`).join('')}`;
+}
+
+function chart(values){
+  if(!values.length) return '';
+  if(values.length===1) return `<div style="font-size:30px;font-weight:600">${values[0]}</div>`;
+  const W=320,H=140,P=26;
+  const max=Math.max(...values), min=Math.min(...values), span=(max-min)||1;
+  const x=i=>P+i*(W-2*P)/(values.length-1);
+  const y=v=>H-P-((v-min)/span)*(H-2*P);
+  const pts=values.map((v,i)=>`${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">
+    <polyline points="${pts}" fill="none" stroke="#2f7cf6" stroke-width="2.5"
+      stroke-linejoin="round" stroke-linecap="round"/>
+    ${values.map((v,i)=>`<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="3.5" fill="#2f7cf6"/>`).join('')}
+    <text x="4" y="14" fill="#8b8b93" font-size="11">${max}</text>
+    <text x="4" y="${H-6}" fill="#8b8b93" font-size="11">${min}</text>
+  </svg>`;
+}
+
+/* ---------- действия ---------- */
+function addExercise(dayId){
+  const d = dayById(dayId);
+  const e = {id:uid(), name:'Новое упражнение', photo:null, sets:[{weight:0,reps:12}]};
+  d.exercises.push(e); save(); go('exEdit', d.id, e.id);
+}
+function renameEx(dayId, exId, v){
+  const e = exById(dayById(dayId), exId); if(e){ e.name = v; saveSoon(); }
+}
+function addSet(dayId, exId){
+  const e = exById(dayById(dayId), exId);
+  const last = e.sets[e.sets.length-1] || {weight:0, reps:12};
+  e.sets.push({weight:last.weight, reps:last.reps});
+  save(); render();
+}
+function delSet(dayId, exId, i){
+  const e = exById(dayById(dayId), exId);
+  e.sets.splice(i,1);
+  if(!e.sets.length) e.sets.push({weight:0, reps:12});
+  save(); render();
+}
+function setField(dayId, exId, i, field, v){
+  const e = exById(dayById(dayId), exId);
+  e.sets[i][field] = num(v); saveSoon();
+}
+async function pickPhoto(input, dayId, exId){
+  const f = input.files[0]; if(!f) return;
+  const data = await compress(f);
+  if(data){ exById(dayById(dayId), exId).photo = data; await save(); render(); }
+}
+function delPhoto(dayId, exId){
+  exById(dayById(dayId), exId).photo = null; save(); render();
+}
+function delExercise(dayId, exId){
+  const d = dayById(dayId);
+  const e = exById(d, exId);
+  if(!confirm(`Удалить «${e.name}»?`)) return;
+  d.exercises = d.exercises.filter(x=>x.id!==exId);
+  save(); go('day', d.id);
+}
+
+/* тренировка */
+function startWorkout(dayId){
+  const d = dayById(dayId);
+  work = {
+    dayId,
+    date: new Date().toISOString(),
+    updatePlan: true,
+    exercises: d.exercises.map(e=>({
+      exId: e.id, name: e.name, photo: e.photo,
+      sets: e.sets.map(s=>({weight:s.weight, reps:s.reps, done:false}))
+    }))
+  };
+  go('workout');
+}
+function wset(ei,si,field,v){ work.exercises[ei].sets[si][field] = num(v); }
+function toggleDone(ei,si,cb){
+  work.exercises[ei].sets[si].done = cb.checked;
+  updateProgressBar();
+}
+function updateProgressBar(){
+  if(!work) return;
+  const all = work.exercises.flatMap(e=>e.sets);
+  const done = all.filter(s=>s.done).length;
+  const pct = all.length ? Math.round(done/all.length*100) : 0;
+  const bar = document.getElementById('wbar');
+  if(bar) bar.style.width = pct+'%';
+}
+function cancelWorkout(){
+  if(!work) return;
+  const dayId = work.dayId;
+  if(confirm('Отменить тренировку? Данные не сохранятся.')){ work=null; go('day', dayId); }
+}
+async function saveWorkout(){
+  const d = dayById(work.dayId);
+  state.sessions.push({
+    id: uid(),
+    date: work.date,
+    dayId: d.id,
+    dayName: d.name,
+    exercises: work.exercises.map(e=>({
+      exId: e.exId, name: e.name,
+      sets: e.sets.map(s=>({weight:s.weight, reps:s.reps, done:!!s.done}))
+    }))
+  });
+  if(work.updatePlan){
+    for(const we of work.exercises){
+      const ex = exById(d, we.exId);
+      if(ex) ex.sets = we.sets.map(s=>({weight:s.weight, reps:s.reps}));
+    }
+  }
+  await save();
+  work = null;
+  go('day', d.id);
+}
+
+/* картинки */
+function compress(file){
+  return new Promise(res=>{
+    const img = new Image(), url = URL.createObjectURL(file);
+    img.onload = () => {
+      const MAX = 900;
+      const k = Math.min(1, MAX/Math.max(img.width,img.height));
+      const w = Math.round(img.width*k), h = Math.round(img.height*k);
+      const c = document.createElement('canvas'); c.width=w; c.height=h;
+      c.getContext('2d').drawImage(img,0,0,w,h);
+      URL.revokeObjectURL(url);
+      res(c.toDataURL('image/jpeg', 0.75));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); res(null); };
+    img.src = url;
+  });
+}
+
+/* бэкап */
+function exportData(){
+  const blob = new Blob([JSON.stringify(state)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'gym-backup-'+new Date().toISOString().slice(0,10)+'.json';
+  a.click();
+}
+async function importData(input){
+  const f = input.files[0]; if(!f) return;
+  try{
+    const data = JSON.parse(await f.text());
+    if(!data.days) throw 0;
+    if(!confirm('Заменить все текущие данные?')) return;
+    state = data;
+    await save(); go('days');
+  }catch(e){ alert('Не удалось прочитать файл'); }
+}
+
+/* старт */
+(async () => {
+  const s = await kvGet('state');
+  if(s && s.days && s.days.length) state = s;
+  else {
+    state.days = DAYS.map(n=>({id:uid(), name:n, exercises:[]}));
+    await save();
+  }
+  render();
+  if('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(()=>{});
+})();
+</script>
+</body>
+</html>
